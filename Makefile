@@ -63,6 +63,9 @@ release: plantuml
 	mkdir -p docs/images
 	cp -v images/*.svg docs/images
 
+ai-reference:
+	python3 scripts/build_ai_reference.py --output docs/ai-reference
+
 preview:
 	mkdir -p docs
 	$(ADOCPDF) --out-file docs/preview/$(OUTFILE).pdf $(INFILE)

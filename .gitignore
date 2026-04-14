@@ -9,5 +9,8 @@ docs
 .*.swp
 *~
 
+# Python
+__pycache__/
+
 # my own files, only for local usage
 *[_.]myown[_.]*

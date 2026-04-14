@@ -7,14 +7,20 @@ Processes each {section}/README.adoc from the automation-good-practices repo:
 
 Outputs compact markdown files suitable for selective AI context loading.
 
+Sources can be local files (when run from the repo root) or fetched from GitHub.
+
 Usage:
     python3 scripts/build_ai_reference.py [--output docs/ai-reference]
+    python3 scripts/build_ai_reference.py --remote
+    python3 scripts/build_ai_reference.py --remote --ref v2.0
 """
 
 import argparse
 import re
 import sys
 from pathlib import Path
+from urllib.error import URLError
+from urllib.request import urlopen
 
 SECTIONS = [
     "structures",
@@ -27,6 +33,10 @@ SECTIONS = [
 ]
 
 MAX_CODE_LINES = 15
+GITHUB_RAW_URL = (
+    "https://raw.githubusercontent.com/"
+    "redhat-cop/automation-good-practices/{ref}/{section}/README.adoc"
+)
 
 # --- Regex patterns ---
 RE_HEADING = re.compile(r"^(={1,4})\s+(.+)$")
@@ -60,10 +70,33 @@ def clean_line(text):
     return text
 
 
-def convert_section(name, base_dir):
-    """Convert one AsciiDoc section file to condensed markdown."""
+def fetch_section(name, ref):
+    """Fetch a section's README.adoc from GitHub."""
+    url = GITHUB_RAW_URL.format(ref=ref, section=name)
+    try:
+        with urlopen(url) as resp:
+            return resp.read().decode("utf-8")
+    except URLError as exc:
+        print(
+            "  ERROR: failed to fetch {}: {}".format(url, exc),
+            file=sys.stderr,
+        )
+        return None
+
+
+def read_section(name, base_dir, ref=None):
+    """Read a section's content from local file or GitHub."""
+    if ref is not None:
+        return fetch_section(name, ref)
     path = base_dir / name / "README.adoc"
-    lines = path.read_text().splitlines()
+    if not path.exists():
+        return None
+    return path.read_text()
+
+
+def convert_section(name, content):
+    """Convert one AsciiDoc section to condensed markdown."""
+    lines = content.splitlines()
     out = []
 
     skip = False
@@ -205,7 +238,7 @@ def convert_section(name, base_dir):
     return "\n".join(out) + "\n"
 
 
-def build_summary(section_names, base_dir):
+def build_summary(section_contents):
     """Build rules-summary.md from heading structure of all sections."""
     out = [
         "# Ansible Good Practices - Rules Summary",
@@ -219,11 +252,8 @@ def build_summary(section_names, base_dir):
         "",
     ]
 
-    for name in section_names:
-        path = base_dir / name / "README.adoc"
-        if not path.exists():
-            continue
-        for line in path.read_text().splitlines():
+    for content in section_contents:
+        for line in content.splitlines():
             m = RE_HEADING.match(line)
             if not m:
                 continue
@@ -260,38 +290,53 @@ def main():
         default=SECTIONS,
         help="Sections to process (default: all)",
     )
+    parser.add_argument(
+        "--remote",
+        action="store_true",
+        help="Fetch sources from GitHub instead of local files",
+    )
+    parser.add_argument(
+        "--ref",
+        default="main",
+        help="Git ref to fetch from when using --remote (default: main)",
+    )
     args = parser.parse_args()
 
+    ref = args.ref if args.remote else None
     base_dir = Path(".")
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    processed = []
+    if args.remote:
+        print("Fetching from GitHub (ref: {})".format(args.ref))
+
+    contents = []
     for name in args.sections:
-        path = base_dir / name / "README.adoc"
-        if not path.exists():
+        content = read_section(name, base_dir, ref=ref)
+        if content is None:
             print(
-                "  WARNING: {} not found, skipping".format(path),
+                "  WARNING: {} not found, skipping".format(name),
                 file=sys.stderr,
             )
             continue
-        md = convert_section(name, base_dir)
+        md = convert_section(name, content)
         out_path = output_dir / "{}.md".format(name)
         out_path.write_text(md)
         line_count = md.count("\n")
-        processed.append(name)
+        contents.append(content)
         print("  {}.md ({} lines)".format(name, line_count))
 
-    summary = build_summary(processed, base_dir)
+    summary = build_summary(contents)
     summary_path = output_dir / "rules-summary.md"
     summary_path.write_text(summary)
     print(
-        "  rules-summary.md ({} total)".format(
+        "  rules-summary.md ({} headings)".format(
             sum(
                 1
-                for n in processed
-                for l in (base_dir / n / "README.adoc").read_text().splitlines()
-                if RE_HEADING.match(l) and len(RE_HEADING.match(l).group(1)) >= 2
+                for c in contents
+                for line in c.splitlines()
+                if RE_HEADING.match(line)
+                and len(RE_HEADING.match(line).group(1)) >= 2
             )
         )
     )
